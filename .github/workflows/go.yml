@@ -25,4 +25,4 @@ jobs:
       run: go build -v ./...
 
     - name: Test
-      run: bash run_tests.sh
+      run: go get -t github.com/danieldiamont/left-right; bash run_tests.sh
