@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 
 	"github.com/google/uuid"
 )
@@ -50,6 +51,7 @@ type Server struct {
     GS                  GameState
     ConnPool            map[*net.Conn]uint8
     Logger              *slog.Logger
+    mu                  sync.Mutex
 }
 
 type Position interface {
@@ -94,7 +96,9 @@ func (bullet *Bullet) hasCollided(p *Player) bool {
 func (s *Server) ConnHandler(c net.Conn) {
     defer s.closeConn(c)
 
+    s.mu.Lock()
     s.ConnPool[&c] = 0
+    s.mu.Unlock()
 
     dec := gob.NewDecoder(c)
 
@@ -119,6 +123,7 @@ func (s *Server) ConnHandler(c net.Conn) {
         }
 
         // update game state
+        s.mu.Lock()
         _, prs := s.GS.IDtoPlayerMap[msg.Player.ID]
         if !prs { // add player if DNE
             p := Player{}
@@ -126,6 +131,7 @@ func (s *Server) ConnHandler(c net.Conn) {
             s.GS.Players = append(s.GS.Players, p)
             s.GS.IDtoPlayerMap[p.ID] = &p
         }
+        s.mu.Unlock()
 
         // update player position on server
         // check if they fired a bullet
@@ -143,10 +149,12 @@ func (s *Server) closeConn(c net.Conn) {
         s.Logger.Error("SERVER - Failed to clean up TCP connection", "err", err)
         os.Exit(1)
     }
+    s.mu.Lock()
     _, prs := s.ConnPool[&c]
     if prs {
         delete(s.ConnPool, &c)
     }
+    s.mu.Unlock()
 }
 
 func (s *Server) setupGameState(version uint8) GameState {

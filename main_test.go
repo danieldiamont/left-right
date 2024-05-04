@@ -112,7 +112,7 @@ func TestServerEcho(t *testing.T) {
 
 
 func TestAddPlayers(t *testing.T) {
-    numPlayers := 100
+    numPlayers := 1000
 
     var ver uint8
     ver = 1
