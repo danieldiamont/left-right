@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/gob"
+	"io"
 	"log/slog"
 	"net"
-    "encoding/gob"
-    "io"
-    "os"
+	"os"
+
+	"github.com/google/uuid"
 )
 
 type GameStateStatus uint8
@@ -25,6 +27,7 @@ const (
 
 const PRODNET = "tcp4"
 const PRODADDR = "127.0.0.1:8080"
+const CONN_LIMIT = 10001
 
 type Msg struct {
     Echo    bool
@@ -35,11 +38,9 @@ type Msg struct {
 type GameState struct {
     Version             uint8
     State               GameStateStatus
-    NumPlayers          uint16
-    NumBullets          uint16
     Players             []Player
     Bullets             []Bullet
-    IDtoPlayerMap       map[uint16]*Player
+    IDtoPlayerMap       map[uuid.UUID]*Player
 }
 
 type Server struct {
@@ -47,8 +48,7 @@ type Server struct {
     Status              ServerStatus
     Listener            net.Listener
     GS                  GameState
-    ConnPool            []*net.Conn
-    activeConnections   uint16
+    ConnPool            map[*net.Conn]uint8
     Logger              *slog.Logger
 }
 
@@ -57,7 +57,7 @@ type Position interface {
 }
 
 type Player struct {
-    ID      uint16
+    ID      uuid.UUID
     Score   uint16
     Y       uint8
     State   uint8   // bit packing (dead/alive), fired bullet, etc
@@ -66,7 +66,8 @@ type Player struct {
 type Bullet struct {
     X           uint8
     Y           uint8
-    PlayerID    uint16
+    ID          uuid.UUID
+    PlayerID    uuid.UUID
 }
 
 func (player *Player) updatePosition(p uint8) bool {
@@ -93,6 +94,8 @@ func (bullet *Bullet) hasCollided(p *Player) bool {
 func (s *Server) ConnHandler(c net.Conn) {
     defer s.closeConn(c)
 
+    s.ConnPool[&c] = 0
+
     dec := gob.NewDecoder(c)
 
     for {
@@ -116,11 +119,12 @@ func (s *Server) ConnHandler(c net.Conn) {
         }
 
         // update game state
-
         _, prs := s.GS.IDtoPlayerMap[msg.Player.ID]
         if !prs { // add player if DNE
-            s.GS.Players = append(s.GS.Players, msg.Player)
-            s.GS.IDtoPlayerMap[msg.Player.ID] = &msg.Player
+            p := Player{}
+            p.ID = uuid.New()
+            s.GS.Players = append(s.GS.Players, p)
+            s.GS.IDtoPlayerMap[p.ID] = &p
         }
 
         // update player position on server
@@ -139,18 +143,20 @@ func (s *Server) closeConn(c net.Conn) {
         s.Logger.Error("SERVER - Failed to clean up TCP connection", "err", err)
         os.Exit(1)
     }
+    _, prs := s.ConnPool[&c]
+    if prs {
+        delete(s.ConnPool, &c)
+    }
 }
 
 func (s *Server) setupGameState(version uint8) GameState {
     gBullets := make([]Bullet, 0)
     gPlayers := make([]Player, 0)
-    gIDtoPlayer := make(map[uint16]*Player)
+    gIDtoPlayer := make(map[uuid.UUID]*Player)
 
     gameState := GameState{
         version,
         Idle,
-        0,
-        0,
         gPlayers,
         gBullets,
         gIDtoPlayer,
@@ -181,10 +187,8 @@ func (s *Server) setup(version uint8, network string, addr string) {
         os.Exit(1)
     }
     s.Listener = ln
-    gConnPool := make([]*net.Conn, 0)
+    gConnPool := make(map[*net.Conn]uint8)
     s.ConnPool = gConnPool
-    s.activeConnections = 0
-
     s.Status = Running
 }
 
@@ -217,6 +221,11 @@ func (s *Server) run() {
         } 
 
         s.Logger.Info("SERVER - Connection received from: ", "remote", conn.RemoteAddr().String())
+
+        if len(s.ConnPool) + 1 >= CONN_LIMIT {
+            s.Logger.Error("SERVER - Reached connection limit", "CONN_LIMIT", CONN_LIMIT)
+            continue
+        }
         go s.ConnHandler(conn)
     }
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+    "github.com/google/uuid"
 )
 
 const TESTNET = "tcp4"
@@ -24,9 +25,9 @@ func closeConnTest(t *testing.T, c net.Conn) {
     }
 }
 
-func generateTestPlayer(id uint16) Player {
+func generateTestPlayer() Player {
     p := Player{}
-    p.ID = id
+    p.ID = uuid.New()
     return p
 }
 
@@ -35,7 +36,7 @@ type Client struct {
     conn    net.Conn
 }
 
-func ClientSetup(id uint16, network string, addr string) (*Client, error) {
+func ClientSetup(network string, addr string) (*Client, error) {
 
     client := Client{}
     conn, err := net.Dial(network, addr)
@@ -52,20 +53,20 @@ func TestServerVersions(t *testing.T) {
     s := serverSetup(version)
     defer s.stop()
     
-    assert.Equal(t, s.Status, Running, "Server should be running")
-    assert.Equal(t, s.Version, version, "Versions should match")
-    assert.Equal(t, s.GS.Version, version, "Versions should match")
+    assert.Equal(t, Running, s.Status, "Server should be running")
+    assert.Equal(t, version, s.Version, "Versions should match")
+    assert.Equal(t, 0, len(s.ConnPool), "Connection pool size should match")
+    assert.Equal(t, version, s.GS.Version, "Versions should match")
+    assert.Equal(t, 0, len(s.GS.Players), "Num Players should match")
 }
 
 func TestServerEcho(t *testing.T) {
     var ver uint8
-    var id uint16
     ver = 1
-    id = 3
     s := serverSetup(ver)
     defer s.stop()
     go s.run()
-    c, err := ClientSetup(id, TESTNET, TESTADDR)
+    c, err := ClientSetup(TESTNET, TESTADDR)
     if err != nil {
         t.Fatalf("TEST - Failed to create client with error: %v\n", err)
     }
@@ -77,7 +78,7 @@ func TestServerEcho(t *testing.T) {
     enc := gob.NewEncoder(c.conn)
     dec := gob.NewDecoder(c.conn)
 
-    msg := Msg{ Echo: true, Magic: magic, Player: generateTestPlayer(id)}
+    msg := Msg{ Echo: true, Magic: magic, Player: generateTestPlayer()}
 
     s.Logger.Info("TEST - Sending message", "msg", msg)
 
@@ -95,5 +96,14 @@ func TestServerEcho(t *testing.T) {
     assert.Equal(t, msg.Echo, res.Echo, "Echo field should match")
     assert.Equal(t, msg.Magic, res.Magic, "Magic field should match")
     assert.Equal(t, msg.Player.ID, res.Player.ID, "Player ID field should match")
+    assert.Equal(t, 1, len(s.ConnPool), "Connection pool size should match")
+}
+
+
+func TestAddPlayer(t *testing.T) {
+    var ver uint8
+    ver = 1
+    _ = ver
+
 }
 
