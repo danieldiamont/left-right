@@ -4,7 +4,8 @@ import (
 	"log"
 	"log/slog"
 	"net"
-    "reflect"
+    "encoding/gob"
+    "os"
 )
 
 type GameStateStatus uint8
@@ -25,7 +26,6 @@ type Player struct {
     Score   uint16
     Y       uint8
     State   uint8   // bit packing (dead/alive), fired bullet, etc
-
 }
 
 type Bullet struct {
@@ -64,25 +64,44 @@ type GameState struct {
     Players             []Player
     Bullets             []Bullet
     ConnPool            []*net.Conn
+    IDtoPlayerMap       map[uint16]*Player
 }
 
 func (g *GameState) ConnHandler(c net.Conn) {
-    defer c.Close()
+    defer closeConn(c)
 
-    t := reflect.TypeOf((*GameState)(nil)).Elem()
-    bufsize := t.Size()
-    
-    buf := make([]byte, bufsize)
+    dec := gob.NewDecoder(c)
 
     for {
-        bytes, err := c.Read(buf)
+        var p Player
+        err := dec.Decode(&p)
         if err != nil {
-            slog.Error("Failed to read from buffer", "err", err)
+            slog.Error("Failed to decode", "err", err)
         }
-        // TODO deserialize
+        log.Printf("Received %+v\n", p)
+
+        // update game state
+
+        _, prs := g.IDtoPlayerMap[p.ID]
+        if !prs { // add player if DNE
+            g.Players = append(g.Players, p)
+            g.IDtoPlayerMap[p.ID] = &p
+        }
+
+        // update player position on server
+        // check if they fired a bullet
+        // check if they collided
+
 
         // TODO collision logic
-        _ = bytes
+    }
+}
+
+func closeConn(c net.Conn) {
+    err := c.Close()
+    if err != nil {
+        slog.Error("Failed to clean up TCP connection", "err", err)
+        os.Exit(1)
     }
 }
 
@@ -92,6 +111,7 @@ func main() {
     gBullets := make([]Bullet, 0)
     gPlayers := make([]Player, 0)
     gConnPool := make([]*net.Conn, 0)
+    gIDtoPlayer := make(map[uint16]*Player)
 
     gameState := GameState{
         0,
@@ -102,12 +122,13 @@ func main() {
         gPlayers,
         gBullets,
         gConnPool,
+        gIDtoPlayer,
     }
 
     ln, err := net.Listen("tcp4", "127.0.0.1:1773")
     if err != nil {
         slog.Error("Failed to create TCP listener", "err", err)
-        log.Fatal("Terminating")
+        os.Exit(1)
     }
     slog.Info("Started TCP listener", "ln", ln)
 
@@ -117,6 +138,7 @@ func main() {
         conn, err := ln.Accept()
         if err != nil {
             slog.Error("Failed to accept incoming connection", "err", err)
+            os.Exit(1)
         }
         go gameState.ConnHandler(conn)
     }
