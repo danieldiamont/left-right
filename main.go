@@ -1,14 +1,15 @@
 package main
 
 import (
-	"log"
 	"log/slog"
 	"net"
     "encoding/gob"
+    "io"
     "os"
 )
 
 type GameStateStatus uint8
+type ServerStatus uint8
 
 const (
     Idle        GameStateStatus = iota
@@ -16,6 +17,40 @@ const (
     Testing
     Error
 )
+
+const (
+    Running     ServerStatus = iota
+    Stopped
+)
+
+const PRODNET = "tcp4"
+const PRODADDR = "127.0.0.1:8080"
+
+type Msg struct {
+    Echo    bool
+    Magic   uint16
+    Player  Player
+}
+
+type GameState struct {
+    Version             uint8
+    State               GameStateStatus
+    NumPlayers          uint16
+    NumBullets          uint16
+    Players             []Player
+    Bullets             []Bullet
+    IDtoPlayerMap       map[uint16]*Player
+}
+
+type Server struct {
+    Version             uint8
+    Status              ServerStatus
+    Listener            net.Listener
+    GS                  GameState
+    ConnPool            []*net.Conn
+    activeConnections   uint16
+    Logger              *slog.Logger
+}
 
 type Position interface {
     updatePosition(p int) bool
@@ -55,37 +90,37 @@ func (bullet *Bullet) hasCollided(p *Player) bool {
     return false
 }
 
-type GameState struct {
-    Version             uint8
-    State               GameStateStatus
-    activeConnections   uint16
-    NumPlayers          uint16
-    NumBullets          uint16
-    Players             []Player
-    Bullets             []Bullet
-    ConnPool            []*net.Conn
-    IDtoPlayerMap       map[uint16]*Player
-}
-
-func (g *GameState) ConnHandler(c net.Conn) {
-    defer closeConn(c)
+func (s *Server) ConnHandler(c net.Conn) {
+    defer s.closeConn(c)
 
     dec := gob.NewDecoder(c)
 
     for {
-        var p Player
-        err := dec.Decode(&p)
+        var msg Msg
+        err := dec.Decode(&msg)
         if err != nil {
-            slog.Error("Failed to decode", "err", err)
+            if err == io.EOF {
+                continue
+            }
+            s.Logger.Error("SERVER - Failed to decode", "err", err)
         }
-        log.Printf("Received %+v\n", p)
+        s.Logger.Info("SERVER - Received message", "msg", msg)
+
+        if msg.Echo {
+            enc := gob.NewEncoder(c)
+            err = enc.Encode(&msg)
+            if err != nil {
+                s.Logger.Error("SERVER - Failed to encode", "err", err)
+            }
+            continue
+        }
 
         // update game state
 
-        _, prs := g.IDtoPlayerMap[p.ID]
+        _, prs := s.GS.IDtoPlayerMap[msg.Player.ID]
         if !prs { // add player if DNE
-            g.Players = append(g.Players, p)
-            g.IDtoPlayerMap[p.ID] = &p
+            s.GS.Players = append(s.GS.Players, msg.Player)
+            s.GS.IDtoPlayerMap[msg.Player.ID] = &msg.Player
         }
 
         // update player position on server
@@ -93,56 +128,107 @@ func (g *GameState) ConnHandler(c net.Conn) {
         // check if they collided
 
 
+
         // TODO collision logic
     }
 }
 
-func closeConn(c net.Conn) {
+func (s *Server) closeConn(c net.Conn) {
     err := c.Close()
     if err != nil {
-        slog.Error("Failed to clean up TCP connection", "err", err)
+        s.Logger.Error("SERVER - Failed to clean up TCP connection", "err", err)
         os.Exit(1)
     }
 }
 
-
-func main() {
-
+func (s *Server) setupGameState(version uint8) GameState {
     gBullets := make([]Bullet, 0)
     gPlayers := make([]Player, 0)
-    gConnPool := make([]*net.Conn, 0)
     gIDtoPlayer := make(map[uint16]*Player)
 
     gameState := GameState{
-        0,
+        version,
         Idle,
-        0,
         0,
         0,
         gPlayers,
         gBullets,
-        gConnPool,
         gIDtoPlayer,
     }
+    return gameState
+}
 
-    ln, err := net.Listen("tcp4", "127.0.0.1:1773")
+func (s *Server) setupListener(network string, addr string) (net.Listener, error) {
+    ln, err := net.Listen(network, addr)
     if err != nil {
-        slog.Error("Failed to create TCP listener", "err", err)
+        s.Logger.Error("SERVER - Failed to create TCP listener", "err", err)
+        return nil, err
+    }
+
+    s.Logger.Info("SERVER - Started TCP listener", "ln", ln.Addr().String())
+    s.Logger.Info("SERVER - Setting up connection pool")
+    return ln, nil
+}
+
+func (s *Server) setup(version uint8, network string, addr string) {
+    logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+    s.Logger = logger
+    s.Version = version
+    s.GS = s.setupGameState(version)
+    ln, err := s.setupListener(network, addr)
+    if err != nil {
         os.Exit(1)
     }
-    slog.Info("Started TCP listener", "ln", ln)
+    s.Listener = ln
+    gConnPool := make([]*net.Conn, 0)
+    s.ConnPool = gConnPool
+    s.activeConnections = 0
 
-    slog.Info("Setting up connection pool")
+    s.Status = Running
+}
+
+func (s *Server) stop() {
+    s.Status = Stopped
+    s.teardownListener()
+}
+
+func (s *Server) teardownListener() {
+    s.Logger.Info("SERVER - Tearing down TCP listener.")
+    err := s.Listener.Close()
+    if err != nil {
+        s.Logger.Error("SERVER - Failed to teardown listener", "err", err)
+        os.Exit(1)
+    }
+}
+
+func (s *Server) run() {
+    s.Logger.Info("SERVER - Ready to accept incoming connections.")
 
     for {
-        conn, err := ln.Accept()
+        conn, err := s.Listener.Accept()
         if err != nil {
-            slog.Error("Failed to accept incoming connection", "err", err)
-            os.Exit(1)
-        }
-        go gameState.ConnHandler(conn)
-    }
+            if s.Status == Stopped {
+                break
+            } else {
+                s.Logger.Error("SERVER - Failed to accept incoming connection", "err", err)
+                return
+            }
+        } 
 
-    // TODO ticker and connection pool
+        s.Logger.Info("SERVER - Connection received from: ", "remote", conn.RemoteAddr().String())
+        go s.ConnHandler(conn)
+    }
+}
+
+func main() {
+
+    var version uint8
+    version = 1
+    s := Server{}
+
+    defer s.stop()
+    s.setup(version, PRODNET, PRODADDR)
+    s.run()
 }
 
