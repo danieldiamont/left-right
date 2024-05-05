@@ -12,10 +12,10 @@ import (
 const TESTNET = "tcp4"
 const TESTADDR = "127.0.0.1:8080"
 
-func serverSetup(version uint8) Server {
+func serverSetup(version uint8) *Server {
     s := Server{}
     s.setup(version, TESTNET, TESTADDR)
-    return s
+    return &s
 }
 
 func closeConnTest(t *testing.T, c net.Conn) {
