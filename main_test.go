@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -78,6 +80,7 @@ func cleanup(s *Server, runnerKill, runnerDone chan bool) {
 }
 
 func TestAddPlayers(t *testing.T) {
+	fmt.Println("GOMAXPROCS = ", runtime.GOMAXPROCS(4))
 	lastArg := os.Args[len(os.Args)-1]
 	numPlayers, _ := strconv.ParseInt(lastArg, 10, 0)
 
@@ -112,13 +115,19 @@ func TestAddPlayers(t *testing.T) {
 		}
 	}
 
+	// time.Sleep(3 * time.Second)
+
+	s.mu.RLock()
 	assert.Equal(t, len(clients), len(s.ConnPool), "Number of clients should match size of connection pool")
 	assert.Equal(t, len(clients), len(s.GS.Players), "Number of clients should num players on server")
+	s.mu.RUnlock()
 
+	s.mu.RLock()
 	for _, p := range s.GS.Players {
 		assert.NotNil(t, p.id, "Player ID should not be nil")
 		assert.NotEqual(t, uint32(0), p.id, "Player ID should be non-zero")
 	}
+	s.mu.RUnlock()
 
 	cleanup(s, runnerKill, runnerDone)
 

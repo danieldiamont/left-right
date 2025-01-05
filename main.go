@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -14,7 +15,7 @@ import (
 
 const PRODNET = "tcp4"
 const PRODADDR = "127.0.0.1:8080"
-const CONN_LIMIT = 10001
+const CONN_LIMIT = 10000
 
 type ServerStatus int
 
@@ -162,6 +163,7 @@ func (s *Server) teardownListener() {
 		s.Logger.Error("SERVER - Failed to teardown listener", "err", err)
 		os.Exit(1)
 	}
+	s.Logger.Info("SERVER - TCP listener is down")
 }
 
 func (s *Server) run(runnerKill, runnerDone chan bool) {
@@ -191,6 +193,11 @@ func (s *Server) run(runnerKill, runnerDone chan bool) {
 	}()
 
 	for {
+		if len(s.ConnPool) >= CONN_LIMIT {
+			s.Logger.Error("SERVER - Reached connection limit", "CONN_LIMIT", CONN_LIMIT)
+			continue
+		}
+
 		s.Logger.Info("SERVER - waiting for connection")
 		conn, err := s.Listener.Accept()
 		if err != nil {
@@ -204,16 +211,12 @@ func (s *Server) run(runnerKill, runnerDone chan bool) {
 
 		s.Logger.Info("SERVER - Connection received from: ", "remote", conn.RemoteAddr().String())
 
-		if len(s.ConnPool)+1 >= CONN_LIMIT {
-			s.Logger.Error("SERVER - Reached connection limit", "CONN_LIMIT", CONN_LIMIT)
-			continue
-		}
-
 		go s.ConnHandler(conn, actions)
 	}
 }
 
 func main() {
+	runtime.GOMAXPROCS(4)
 
 	done := make(chan bool)
 	runnerDone := make(chan bool)
@@ -232,9 +235,10 @@ func main() {
 		for {
 			select {
 			case sig := <-sigs:
-				s.Logger.Info("Received signal ", "SIGNAL", sig.String())
+				s.Logger.Info("SERVER - Received signal ", "SIGNAL", sig.String())
 				runnerKill <- true
 				<-runnerDone
+				s.Logger.Info("SERVER - Runner is done")
 				s.stop()
 				done <- true
 			}
