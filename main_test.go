@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,7 +78,8 @@ func cleanup(s *Server, runnerKill, runnerDone chan bool) {
 }
 
 func TestAddPlayers(t *testing.T) {
-	numPlayers := 10000
+	lastArg := os.Args[len(os.Args)-1]
+	numPlayers, _ := strconv.ParseInt(lastArg, 10, 0)
 
 	var ver uint8
 	ver = 1
@@ -86,7 +89,7 @@ func TestAddPlayers(t *testing.T) {
 	go s.run(runnerKill, runnerDone)
 
 	clients := make([]*Client, 0)
-	for i := 0; i < numPlayers; i++ {
+	for i := 0; i < int(numPlayers); i++ {
 		c, err := ClientSetup(t, TESTNET, TESTADDR)
 		if err != nil {
 			t.Fatalf("TEST - Failed to create client with error: %v\n", err)
