@@ -193,7 +193,11 @@ func (s *Server) run(runnerKill, runnerDone chan bool) {
 	}()
 
 	for {
-		if len(s.ConnPool) >= CONN_LIMIT {
+		s.mu.RLock()
+		poolLen := len(s.ConnPool)
+		s.mu.RUnlock()
+
+		if poolLen >= CONN_LIMIT {
 			s.Logger.Error("SERVER - Reached connection limit", "CONN_LIMIT", CONN_LIMIT)
 			continue
 		}
